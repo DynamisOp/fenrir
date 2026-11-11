@@ -1,188 +1,79 @@
-# Fenrir – Bypass Lock Control Patch (Pattern Update Guide)
+# Fenrir – Rodin (POCO X7 Pro / Redmi Turbo 4) Patch Update Guide
 
-This document explains how to **manually update the `bypass_lock_control` patch pattern** when fenrir reports:
+This document explains how to **manually update pattern signatures** when Xiaomi updates firmware and fenrir reports missing pattern warnings such as:
 
 ```
 Warning: Pattern not found for patch 'bypass_lock_control'
-```
-
-This happens when your `lk.img` firmware differs from the one fenrir was originally designed for.  
-The steps below show how to locate the new pattern using `radare2`, update the device definition, and successfully apply the patch.
-
----
-
-## Tools Required
-
-- [radare2](https://rada.re/n/) – for disassembly and binary analysis
-- fenrir (the injector tool) – available at [R0rt1z2/fenrir](https://github.com/R0rt1z2/fenrir)
-- A hex editor or `dd` for manual patching (optional)
-
----
-
-## Understanding the Patch
-
-The `bypass_lock_control` patch targets a **conditional branch** that checks the lock state.  
-If the device is locked, it jumps to an error routine and blocks `fastboot flash`.  
-The patch changes the conditional branch (`b.ne`) into an unconditional branch (`b`), so the error is always skipped.
-
-The original pattern (for the old `lk.img`) was:
-
-```
-00 74 3d 91 c3 00 00 14 e8 0f 40 b9 1f 05 00 71 21 01 00 54
-```
-
-The replacement changes the last 4 bytes from `21 01 00 54` to `09 00 00 14`.
-
-When the pattern is not found, you need to find the **equivalent bytes** in your new firmware.
-
----
-
-## Step‑by‑Step Procedure
-
-### 1. Determine the correct base load address
-
-The `lk.img` is a raw ARM binary. For MediaTek devices, the common base address is `0x8E000000` or `0x81E00000`.  
-You can verify the correct base by loading the binary and checking if a known string (like `"Flashing is not allowed in Lock state"`) shows readable ASCII.
-
-```bash
-r2 -a arm -b 32 -m 0x8E000000 lk.img
-```
-
-If you see garbage, try other common bases (`0x81E00000`, `0x80000000`, `0x88000000`).  
-In our case, `0x8E000000` was correct.
-
-### 2. Locate the load‑compare‑branch pattern
-
-Search for the **core** part of the old pattern that is unlikely to change:
-
-```
-e8 0f 40 b9 1f 05 00 71
-```
-
-This is the load (`ldr`) and compare (`cmp`) that precede the conditional branch.
-
-```bash
-[0x8e000000]> /x e80f40b91f050071
-```
-
-This will list several hits. The first hit often corresponds to the lock‑check function (especially if it appears at a low offset, e.g., `0x8e00ca38`).
-
-### 3. Examine the hit and locate the branch
-
-Seek to the found address and disassemble a few instructions:
-
-```bash
-[0x8e000000]> s 0x8e00ca38
-[0x8e00ca38]> pd 10
-```
-
-You should see the load, compare, and then a conditional branch.  
-In our case, the bytes at `0x8e00ca40` were `21 01 00 54` (the branch).  
-Confirm that this is indeed the lock check – the error string `"Flashing is not allowed in Lock state"` will be referenced nearby.
-
-### 4. Get the full 20‑byte pattern
-
-The pattern fenrir expects is the **20 bytes starting from the instruction before the load**.  
-In our case, the load starts at `0x8e00ca38`, so we need the 20 bytes from `0x8e00ca30`:
-
-```bash
-[0x8e000000]> s 0x8e00ca30
-[0x8e00ca30]> px 20
-```
-
-This gives the new pattern. Write it down.
-
-### 5. Update the device definition
-
-Open `devices.py` (or the appropriate device file) and locate the `rodin` entry.  
-Replace the `pattern` of `bypass_lock_control` with the **new** 20 bytes you obtained.  
-The `replacement` should be the same bytes, but with the last 4 bytes changed from `21 01 00 54` to `09 00 00 14`.
-
-Example update:
-
-```python
-'bypass_lock_control': PatchStage(
-    'bypass_lock_control',
-    pattern='00 d0 3d 91 c3 00 00 14 e8 0f 40 b9 1f 05 00 71 21 01 00 54',
-    replacement='00 d0 3d 91 c3 00 00 14 e8 0f 40 b9 1f 05 00 71 09 00 00 14',
-    match_mode=MatchMode.ALL,
-    description='Allow fastboot flashing regardless of lock state',
-),
-```
-
-### 6. Re‑run fenrir
-
-Now the pattern will be found and applied automatically:
-
-```bash
-./inject.sh rodin lk.img
-```
-
-You should see:
-
-```
-Successfully applied patch 'bypass_lock_control'
-```
-
-### 7. Flash the patched image
-
-The output file (e.g., `rodin-fenrir.bin`) can be flashed to the device:
-
-```bash
-fastboot flash lk rodin-fenrir.bin
+Warning: Pattern not found for patch 'force_green_state'
+Warning: Pattern not found for patch 'bypass_imgkey_region_check'
+Warning: Pattern not found for patch 'bypass_sku_check'
 ```
 
 ---
 
-## Alternative: Manual Patching (if you don't want to update the device file)
+## 1. Summary of Patches & Current Patterns
 
-If you prefer to patch the binary once and skip the patch in fenrir:
+| Patch Name | Description | Current Pattern (Hex) | Current Replacement (Hex) |
+|---|---|---|---|
+| `bypass_lock_control` | Skip lock error branch in fastboot flash | `00 f8 3b 91 c3 00 00 14 e8 0f 40 b9 1f 05 00 71 21 01 00 54` | `00 f8 3b 91 c3 00 00 14 e8 0f 40 b9 1f 05 00 71 09 00 00 14` |
+| `force_green_state` | Store `wzr` (0) into boot state variable | `e8 04 00 f0 00 c1 01 b9 bf 23 03 d5` | `e8 04 00 f0 1f c1 01 b9 bf 23 03 d5` |
+| `bypass_imgkey_region_check` | Unconditionally jump to bypass CN region key check | `fe 0a 01 94 00 05 00 34` | `fe 0a 01 94 28 00 00 14` |
+| `bypass_sku_check` | Skip SKU check jump to AVB bypass region check | `f6 03 00 aa 4f f0 fe 97 e0 00 00 34` | `f6 03 00 aa 4f f0 fe 97 7c 00 00 14` |
 
-1. Get the **file offset** of the branch instruction:
+---
+
+## 2. Understanding Each Patch & How to Update Them
+
+### A. `bypass_lock_control`
+- **Purpose**: Fastboot flashing checks if device lock state equals 1 (`cmp w8, #1`). If locked, it falls through to print `"Flashing is not allowed in Lock state"`. If unlocked, it takes `b.ne` to skip the error.
+- **Mechanism**: The patch converts the conditional branch `b.ne` into an unconditional branch `b +0x24` (`09 00 00 14`), skipping the error block unconditionally.
+- **Finding the pattern**:
+  1. Search for the load/compare anchor in `lk`: `e8 0f 40 b9 1f 05 00 71` (`ldr w8, [sp, #12] ; cmp w8, #1`).
+  2. The hit right before string `"Flashing is not allowed in Lock state"` has `b.ne +0x24` (`21 01 00 54`).
+  3. Capture the 20 bytes starting 2 instructions before `ldr`.
+  4. Replace the last 4 bytes (`21 01 00 54`) with `09 00 00 14`.
+
+### B. `force_green_state`
+- **Purpose**: Sets device boot state to Green (0) instead of Orange (1) / Red (2) so Android and TEE verify the boot integrity as locked/green.
+- **Mechanism**: The bootloader function `set_boot_state(uint32_t state)` performs `adrp x8, <page>` followed by `str w0, [x8, #448] ; autiasp ; ret`. The patch changes `str w0` (opcode `00 c1 01 b9`) to `str wzr` (opcode `1f c1 01 b9`).
+- **Finding the pattern**:
+  1. Search in `lk` for `autiasp` (`bf 23 03 d5`) preceded by `str w0, [x8, #448]` (`00 c1 01 b9`).
+  2. The preceding `adrp x8` instruction varies depending on the page offset (e.g. `e8 04 00 d0` vs `e8 04 00 f0`).
+  3. Pattern: `<adrp_bytes> 00 c1 01 b9 bf 23 03 d5`.
+  4. Replacement: `<adrp_bytes> 1f c1 01 b9 bf 23 03 d5`.
+
+### C. `bypass_imgkey_region_check`
+- **Purpose**: Allows booting cross-region or CN firmware by skipping the image key region check.
+- **Mechanism**: Calls `strcmp(region, "yes")` followed by `cbz w0, <bypass_label>`. When not matching "yes", it errors with `"img region not match!\n"`. The patch replaces `cbz` with unconditional branch `b +0x28` (`28 00 00 14`) to jump directly to the `"lk bypass check region img key\n"` branch.
+- **Finding the pattern**:
+  1. Find string `"lk bypass check region img key"` in `lk`.
+  2. Inspect the cross-reference: locate `bl <strcmp>` followed by `cbz w0, <target>` (`00 05 00 34`).
+  3. Pattern: `<bl_strcmp_bytes> 00 05 00 34`.
+  4. Replacement: `<bl_strcmp_bytes> 28 00 00 14`.
+
+### D. `bypass_sku_check`
+- **Purpose**: Bypasses the AVB SKU verification check on POCO X7 Pro / Redmi Turbo 4.
+- **Mechanism**: Reads property `bypass_check_imgkey`, checks string length (`bl <strlen>`), followed by `cbz w0, <strict_check>`. If bypassed, it jumps to `[AVB] bypass check region img key\n` (target +0x1F0 bytes). The patch replaces `cbz w0` (`e0 00 00 34`) with unconditional `b +0x1f0` (`7c 00 00 14`).
+- **Finding the pattern**:
+  1. Find string `bypass_check_imgkey` in `lk`.
+  2. Disassemble around the cross-reference: find `mov x22, x0 ; bl <strlen> ; cbz w0, <fallback>`.
+  3. Pattern: `f6 03 00 aa <bl_strlen_bytes> e0 00 00 34`.
+  4. Replacement: `f6 03 00 aa <bl_strlen_bytes> 7c 00 00 14`.
+
+---
+
+## 3. How to Build & Flash Safely Without Bricking
+
+1. **Verify All Patches Match**:
+   Always run:
    ```bash
-   [0x8e000000]> ?v 0x8e00ca40
+   ./build.sh rodin
    ```
-   This gives the physical offset (e.g., `0xca40`).
+   Check the output carefully! Every patch must report `Successfully applied patch ...`. There must be **ZERO** `Warning: Pattern not found` warnings.
 
-2. Patch the file directly with `dd`:
+2. **Always Keep Stock Backup**:
+   Before flashing anything, always keep an untouched copy of your original bootloader image:
    ```bash
-   printf "\x09\x00\x00\x14" | dd of=lk.img bs=1 seek=$((0xca40)) conv=notrunc
+   fastboot flash lk_a rodin-fenrir.bin
    ```
-
-3. Run fenrir skipping the patch:
-   ```bash
-   ./inject.sh rodin lk.img --skip-patch bypass_lock_control
-   ```
-
-The resulting image will still have all other patches applied.
-
----
-
-## Why This Works
-
-- The lock state is read by a function and compared with a value.  
-- The conditional branch (`b.ne`) jumps to an error when the lock state is not “unlocked”.  
-- Changing it to an unconditional branch (`b`) always skips the error, so flashing is always allowed.
-
-This is a safe and reliable way to bypass the lock check without needing to understand the entire bootloader.
-
----
-
-## Troubleshooting
-
-- If the search for `e80f40b91f050071` gives no hits, the load/compare may have changed.  
-  In that case, search for the **conditional branch** opcode (`21 01 00 54`) and look for a preceding load/compare.  
-  Or, search for the error string and find cross‑references to locate the function.
-
-- If you are unsure about the correct base address, use the **verbose output** of fenrir (some versions print offsets) to compute the base from a successfully applied patch.
-
-- Always keep a backup of the original `lk.img` before modifying.
-
----
-
-## Credits
-
-- fenrir by [R0rt1z2](https://github.com/R0rt1z2)
-- radare2 for analysis
-
-This guide was written based on real analysis of the `rodin` (Redmi Turbo 4 / POCO X7 Pro) bootloader.
+   If needed, you can always flash back the stock bootloader in fastboot mode.
